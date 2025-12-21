@@ -330,6 +330,7 @@ class MusicPlayer(QMainWindow):
         self.audio_output.setVolume(0.7)
         
         self.music_folder = Path(__file__).parent / "Music"
+        self.music_folder.mkdir(exist_ok=True)
         self.current_playlist = []
         self.current_playlist_name = None
         self.current_index = -1
@@ -371,7 +372,7 @@ class MusicPlayer(QMainWindow):
         self.load_music_library()
         self.load_playlists()
         self.refresh_playlist_sidebar()
-  
+        
         self.current_playlist_name = None
         self.view_label.setText("Your Library")
         self.display_songs(self.all_songs)
@@ -945,50 +946,51 @@ class MusicPlayer(QMainWindow):
         """)
     
     def load_music_library(self):
-        """Scan and load all music files from the folder"""
+        """Scan and load all music files from all playlist folders"""
         self.all_songs = []
         
-        if not self.music_folder.exists():
-            QMessageBox.warning(self, "Music Folder Not Found", 
-                              f"Could not find folder: {self.music_folder}")
-            return
+        base_dir = Path(__file__).parent
         
-        for file in self.music_folder.glob("*.mp3"):
-            try:
-                audio = MP3(file)
-                duration = int(audio.info.length)
-                
-                title = file.stem
-                artist = "Unknown Artist"
-                album = "Unknown Album"
-                
-                if audio.tags:
-                    title = str(audio.tags.get("TIT2", title))
-                    artist = str(audio.tags.get("TPE1", artist))
-                    album = str(audio.tags.get("TALB", album))
-                
-                album_art_data = None
+        for folder in base_dir.iterdir():
+            if not folder.is_dir() or folder.name.startswith('.') or folder.name == '__pycache__':
+                continue
+            
+            for file in folder.glob("*.mp3"):
                 try:
+                    audio = MP3(file)
+                    duration = int(audio.info.length)
+                    
+                    title = file.stem
+                    artist = "Unknown Artist"
+                    album = "Unknown Album"
+                    
                     if audio.tags:
-                        for tag in audio.tags.values():
-                            if hasattr(tag, 'mime') and tag.mime.startswith('image/'):
-                                album_art_data = tag.data
-                                break
-                except:
-                    pass
-                
-                song_info = {
-                    "title": title,
-                    "artist": artist,
-                    "album": album,
-                    "duration": duration,
-                    "path": str(file),
-                    "filename": file.name,
-                    "album_art": album_art_data
-                }
-                self.all_songs.append(song_info)
-            except Exception as e:
-                print(f"Error loading {file.name}: {e}")
+                        title = str(audio.tags.get("TIT2", title))
+                        artist = str(audio.tags.get("TPE1", artist))
+                        album = str(audio.tags.get("TALB", album))
+                    
+                    album_art_data = None
+                    try:
+                        if audio.tags:
+                            for tag in audio.tags.values():
+                                if hasattr(tag, 'mime') and tag.mime.startswith('image/'):
+                                    album_art_data = tag.data
+                                    break
+                    except:
+                        pass
+                    
+                    song_info = {
+                        "title": title,
+                        "artist": artist,
+                        "album": album,
+                        "duration": duration,
+                        "path": str(file),
+                        "filename": file.name,
+                        "album_art": album_art_data
+                    }
+                    self.all_songs.append(song_info)
+                except Exception as e:
+                    print(f"Error loading {file.name}: {e}")
         
         self.all_songs.sort(key=lambda x: x["title"])
     
@@ -1051,6 +1053,14 @@ class MusicPlayer(QMainWindow):
                         "created": playlist_data.get("created", "unknown"),
                         "persistent": playlist_data.get("persistent", False)
                     }
+                    
+                    existing_paths = {song["path"] for song in self.all_songs}
+                    for song in songs:
+                        if song["path"] not in existing_paths:
+                            self.all_songs.append(song)
+                            existing_paths.add(song["path"])
+            
+            self.all_songs.sort(key=lambda x: x["title"])
         except Exception as e:
             print(f"Error loading playlists: {e}")
     
@@ -1256,7 +1266,7 @@ class MusicPlayer(QMainWindow):
                 return
         
         download_dir = self.music_folder / name
-        download_dir.mkdir(exist_ok=True)
+        download_dir.mkdir(parents=True, exist_ok=True)
         
         dialog = DownloadDialog(None)
         dialog.show()
@@ -1387,7 +1397,8 @@ class MusicPlayer(QMainWindow):
             first_song_dir = Path(self.playlists[playlist_name]["songs"][0]["path"]).parent
             download_dir = first_song_dir
         else:
-            download_dir = self.music_folder
+            download_dir = self.music_folder / playlist_name
+            download_dir.mkdir(parents=True, exist_ok=True)
         
         download_dir.mkdir(exist_ok=True)
         
@@ -2933,4 +2944,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
