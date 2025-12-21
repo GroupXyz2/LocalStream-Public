@@ -329,7 +329,7 @@ class MusicPlayer(QMainWindow):
         self.player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(0.7)
         
-        self.music_folder = Path(__file__).parent / "AnimeOpenings"
+        self.music_folder = Path(__file__).parent / "Music"
         self.current_playlist = []
         self.current_playlist_name = None
         self.current_index = -1
@@ -370,17 +370,11 @@ class MusicPlayer(QMainWindow):
         
         self.load_music_library()
         self.load_playlists()
-        self.load_spotify_playlist()
         self.refresh_playlist_sidebar()
-        
-        if "Anime Openings (Spotify)" in self.playlists:
-            self.current_playlist_name = "Anime Openings (Spotify)"
-            self.view_label.setText("Anime Openings (Spotify)")
-            self.display_songs(self.playlists["Anime Openings (Spotify)"]["songs"])
-        else:
-            self.current_playlist_name = None
-            self.view_label.setText("Your Library")
-            self.display_songs(self.all_songs)
+  
+        self.current_playlist_name = None
+        self.view_label.setText("Your Library")
+        self.display_songs(self.all_songs)
         
         self.player.positionChanged.connect(self.update_position)
         self.player.durationChanged.connect(self.update_duration)
@@ -997,195 +991,6 @@ class MusicPlayer(QMainWindow):
                 print(f"Error loading {file.name}: {e}")
         
         self.all_songs.sort(key=lambda x: x["title"])
-    
-    def load_spotify_playlist(self):
-        """Load the Spotify playlist from CSV and match with local files"""
-        csv_path = Path(__file__).parent / "AnimeOpenings.csv"
-        
-        if not csv_path.exists():
-            return
-        
-        if "Anime Openings (Spotify)" in self.playlists:
-            return
-        
-        try:
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                spotify_tracks = list(reader)
-            
-            matched_paths = set()
-            matched_songs = []
-            unmatched_tracks = []
-            
-            manual_mappings = {
-                "境界線": "86 EIGHTY-SIX - Opening 2 ｜ Kyoukaisen [0U6JUTWas8c].mp3",
-                "太陽が昇らない世界 - A World Where the Sun Never Rises": "Aimer「太陽が昇らない世界」Music Video（『劇場版「鬼滅の刃」無限城編 』第一章 猗窩座再来』 主題歌） [DJOf0XtVpkI].mp3"
-            }
-            
-            for track in spotify_tracks:
-                track_name = track.get("Track Name", "")
-                artist_name = track.get("Artist Name(s)", "")
-                album_name = track.get("Album Name", "")
-                
-                if track_name in manual_mappings:
-                    target_filename = manual_mappings[track_name]
-                    for song in self.all_songs:
-                        if song["filename"] == target_filename and song["path"] not in matched_paths:
-                            matched_paths.add(song["path"])
-                            matched_songs.append(song)
-                            print(f"✓ Manual match: '{track_name}' -> '{target_filename}'")
-                            break
-                    continue
-                
-                best_match = None
-                best_score = 0
-                
-                for song in self.all_songs:
-                    if song["path"] in matched_paths:
-                        continue
-                    
-                    score = 0
-                    
-                    track_lower = track_name.lower()
-                    for char in ['-', '_', '(', ')', '[', ']', '.mp3', ',', '|', ':', '!', '?', '"', "'", 
-                                '＂', '（', '）', '｜', '：', '！', '？', '～', '〜', '/', '＃']:
-                        track_lower = track_lower.replace(char, ' ')
-                    track_words = set(track_lower.split())
-                    
-                    has_metadata = bool(song["title"].strip() and song["artist"].strip())
-                    
-                    title_lower = song["title"].lower()
-                    for char in ['-', '_', '(', ')', '[', ']', ',', '|', ':', '!', '?', '"', "'",
-                                '＂', '（', '）', '｜', '：', '！', '？', '～', '〜', '/', '＃']:
-                        title_lower = title_lower.replace(char, ' ')
-                    
-                    title_words = set(title_lower.split())
-                    if track_words and title_words and has_metadata:
-                        title_overlap = len(track_words & title_words) / len(track_words)
-                        score += title_overlap * 15
-                        
-                        if title_overlap > 0.8:
-                            score += 5
-                    
-                    filename_lower = song["filename"].lower()
-                    for char in ['-', '_', '(', ')', '[', ']', '.mp3', ',', '|', ':', '!', '?', '"', "'",
-                                '＂', '（', '）', '｜', '：', '！', '？', '～', '〜', '/', '＃']:
-                        filename_lower = filename_lower.replace(char, ' ')
-                    
-                    filename_words = set(filename_lower.split())
-                    if track_words and filename_words:
-                        word_overlap = len(track_words & filename_words) / len(track_words)
-                        filename_weight = 20 if not has_metadata else 8
-                        score += word_overlap * filename_weight
-                    
-                    if has_metadata:
-                        artist_lower = song["artist"].lower()
-                        csv_artist_lower = artist_name.lower()
-                        
-                        csv_artists = [a.strip() for a in csv_artist_lower.replace(';', ',').split(',')]
-                        
-                        for csv_artist in csv_artists:
-                            if len(csv_artist) > 2:
-                                if csv_artist in artist_lower or artist_lower in csv_artist:
-                                    score += 5
-                                    break
-                    
-                    if has_metadata:
-                        album_lower = song["album"].lower()
-                        if album_name and len(album_name) > 3:
-                            if album_name.lower() in album_lower or album_lower in album_name.lower():
-                                score += 3
-                    
-                    if len(track_lower) > 5:
-                        check_target = filename_lower if not has_metadata else filename_lower
-                        if track_lower in check_target:
-                            substring_bonus = 8 if not has_metadata else 3
-                            score += substring_bonus
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_match = song
-                
-                if best_match and best_score >= 8:
-                    matched_paths.add(best_match["path"])
-                    matched_songs.append(best_match)
-                elif best_match and best_score >= 3.5:
-                    track_lower = track_name.lower()
-                    title_lower = best_match["title"].lower()
-                    artist_lower = best_match["artist"].lower()
-                    csv_artist_lower = artist_name.lower()
-                    
-                    for char in ['-', '_', '(', ')', '[', ']', ',', '|', ':', '!', '?', '.']:
-                        track_lower = track_lower.replace(char, ' ')
-                        title_lower = title_lower.replace(char, ' ')
-                    
-                    track_words = set(track_lower.split())
-                    title_words = set(title_lower.split())
-                    
-                    if track_words and title_words:
-                        overlap = len(track_words & title_words) / len(track_words)
-                        if overlap >= 0.5:
-                            matched_paths.add(best_match["path"])
-                            matched_songs.append(best_match)
-                            print(f"✓ Medium match: '{track_name}' -> '{best_match['title']}' (score: {best_score:.1f})")
-                            continue
-                    
-                    csv_artists = [a.strip() for a in csv_artist_lower.replace(';', ',').split(',')]
-                    for csv_artist in csv_artists:
-                        if len(csv_artist) > 2 and csv_artist in artist_lower:
-                            matched_paths.add(best_match["path"])
-                            matched_songs.append(best_match)
-                            print(f"✓ Artist match: '{track_name}' by '{artist_name}' -> '{best_match['filename']}' (score: {best_score:.1f})")
-                            break
-                    else:
-                        unmatched_tracks.append({
-                            "track": track_name,
-                            "artist": artist_name,
-                            "best_score": best_score,
-                            "best_match": best_match["filename"] if best_match else "None",
-                            "best_match_title": best_match["title"] if best_match else "None"
-                        })
-                else:
-                    unmatched_tracks.append({
-                        "track": track_name,
-                        "artist": artist_name,
-                        "best_score": best_score,
-                        "best_match": best_match["filename"] if best_match else "None",
-                        "best_match_title": best_match["title"] if best_match else "None"
-                    })
-            
-            if unmatched_tracks:
-                print("\n=== UNMATCHED TRACKS ===")
-                for um in unmatched_tracks:
-                    print(f"❌ {um['track']} - {um['artist']}")
-                    print(f"   Best: {um['best_match']} | Title: {um['best_match_title']} (score: {um['best_score']:.1f})")
-                print("========================\n")
-            
-            if matched_songs:
-                self.playlists["Anime Openings (Spotify)"] = {
-                    "songs": matched_songs,
-                    "created": "imported",
-                    "persistent": True
-                }
-                self.save_playlists()
-                
-                unmatched = len(spotify_tracks) - len(matched_songs)
-                unused_local = len(self.all_songs) - len(matched_paths)
-                
-                return
-                if unmatched > 0 or unused_local > 0:
-                    msg = f"Playlist imported:\n\n"
-                    msg += f"✓ Matched: {len(matched_songs)} songs\n"
-                    if unmatched > 0:
-                        msg += f"⚠ CSV tracks not matched: {unmatched}\n"
-                    if unused_local > 0:
-                        msg += f"⚠ Local files not in playlist: {unused_local}\n\n"
-                    msg += f"Check 'Your Library' to see all {len(self.all_songs)} local songs."
-                    
-                    QMessageBox.information(self, "Spotify Playlist Imported", msg)
-            
-        except Exception as e:
-            print(f"Error loading Spotify playlist: {e}")
     
     def load_playlists(self):
         """Load playlists from JSON file"""
@@ -3128,3 +2933,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
