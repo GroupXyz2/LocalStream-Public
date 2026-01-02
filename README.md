@@ -1,75 +1,68 @@
-# LocalStream Desktop
+# LocalStream
 
-A PyQt6-based music player with Spotify integration, playlist management, and server synchronization.
+A cross-platform music streaming ecosystem with desktop player, server backend, and Android client.
 
-## Requirements
+## Architecture
 
-- Python 3.8+
-- PyQt6
-- mutagen
-- pyloudnorm
-- soundfile
-- numpy
+LocalStream consists of three components that work together to provide synchronized music playback across devices:
 
-## Installation
+### Desktop Application (`LocalStream.pyw`)
 
-```bash
-pip install -r requirements.txt
-```
+PyQt6-based music player with Spotify integration and local library management.
 
-## Features
+**Key Features:**
+- MP3/MP4 audio playback with volume normalization (LUFS)
+- Playlist management with persistent storage
+- Spotify song/album/playlist download via spotdl
+- Server synchronization for cross-device library access
+- Metadata editing and album artwork management
+- Strict deduplication (filename or filename+size based)
 
-- **Audio Playback**: Supports MP3 and MP4 audio/video files
-- **Playlist Management**: Create, edit, and organize playlists with persistent storage
-- **Spotify Integration**: Download songs, albums, and playlists via spotdl
-- **Server Sync**: Two-way synchronization with LocalStream server
-- **Volume Normalization**: LUFS-based audio normalization for consistent playback
-- **Metadata Editing**: View and edit song information and album artwork
-- **Strict Deduplication**: Prevents duplicate songs based on filename or filename+size
-- **Folder Import**: Bulk import audio files from directories
+**Requirements:** Python 3.8+, PyQt6, mutagen, pyloudnorm
 
-## Configuration
-
-Settings are stored in `settings.json`:
-
-```json
-{
-    "music_folder": "path/to/music",
-    "download_dir": "path/to/downloads",
-    "server_url": "https://your-server.com:8192",
-    "server_username": "username",
-    "server_password": "password",
-    "auto_sync_enabled": false,
-    "auto_sync_interval": 300000
-}
-```
-
-Playlists are stored in `playlists.json` with song metadata and file paths.
-
-## Usage
-
-Run the application:
 ```bash
 python LocalStream.pyw
 ```
 
-### Keyboard Shortcuts
+### Server (`server/`)
 
-- **Space**: Play/Pause
-- **Right Arrow**: Next track
-- **Left Arrow**: Previous track
+FastAPI-based REST API for music file hosting and playlist synchronization.
 
-### Server Sync
+**Key Features:**
+- JWT authentication with configurable users
+- RESTful API for playlist and music file management
+- MD5-based file integrity verification
+- SSL/TLS support with Let's Encrypt
+- Configurable via `settings.json`
 
-Configure server credentials in `settings.json`, then use the sync button to:
-- Upload local playlists to server
-- Download missing songs from server
-- Maintain synchronized music library across devices
+**Requirements:** Python 3.8+, FastAPI, uvicorn, PyJWT
 
-## Technical Details
+See [server/README.md](server/README.md) for detailed setup.
 
-- **Audio Engine**: PyQt6 QMediaPlayer with QAudioOutput
-- **Metadata**: mutagen library for ID3/MP4 tag reading/writing
-- **Normalization**: pyloudnorm (EBU R128 standard, -14 LUFS target)
-- **Authentication**: JWT token-based server authentication
-- **File Hashing**: MD5 checksums for duplicate detection and sync verification
+### Android Application (`android/`)
+
+Kotlin-based mobile client for streaming synchronized playlists.
+
+**Key Features:**
+- Playlist browsing and playback
+- Server sync with automatic file downloads
+- Persistent settings (SharedPreferences)
+- Background playback service
+
+**Requirements:** Android SDK, Gradle
+
+## Setup
+
+1. **Server**: Configure `server/settings.json` with credentials and SSL certificates, then run `python server/main.py`
+2. **Desktop**: Install dependencies via `pip install -r requirements.txt`, configure `settings.json`, run `LocalStream.pyw`
+3. **Android**: Configure server URL/credentials in app settings, sync playlists
+
+## Configuration Files
+
+- `settings.json` - Desktop app configuration (music folders, server credentials)
+- `playlists.json` - Playlist storage with song metadata
+- `server/settings.json` - Server configuration (users, paths, SSL)
+
+## Synchronization
+
+All components use JWT authentication and MD5 checksums to maintain library consistency. The server acts as the central repository, with desktop and mobile clients syncing bidirectionally.
