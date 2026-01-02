@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import shutil
+import json
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -15,22 +16,44 @@ import jwt
 import uvicorn
 from pydantic import BaseModel
 
-SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(32))
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 720 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-MUSIC_DIR = DATA_DIR / "music"
-PLAYLISTS_FILE = DATA_DIR / "playlists.json"
+SETTINGS_FILE = BASE_DIR / "settings.json"
+
+def load_settings():
+    if not SETTINGS_FILE.exists():
+        print(f"ERROR: Settings file not found at {SETTINGS_FILE}")
+        print("Please create settings.json with your configuration.")
+        exit(1)
+    
+    with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+        settings = json.load(f)
+    
+    if settings["security"]["secret_key"] is None:
+        settings["security"]["secret_key"] = secrets.token_hex(32)
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=4)
+    
+    return settings
+
+CONFIG = load_settings()
+
+SECRET_KEY = CONFIG["security"]["secret_key"]
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = CONFIG["security"]["access_token_expire_hours"]
+
+DATA_DIR = BASE_DIR / CONFIG["paths"]["data_dir"]
+MUSIC_DIR = BASE_DIR / CONFIG["paths"]["music_dir"]
+PLAYLISTS_FILE = BASE_DIR / CONFIG["paths"]["playlists_file"]
 
 DATA_DIR.mkdir(exist_ok=True)
-MUSIC_DIR.mkdir(exist_ok=True)
+MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_DB = {
-    "GroupXyz": {
-        "username": "Admin",
-        "password_hash": hashlib.sha256("Password".encode()).hexdigest()
+    user["username"]: {
+        "username": user["username"],
+        "password_hash": hashlib.sha256(user["password"].encode()).hexdigest()
     }
+    for user in CONFIG["users"]
 }
 
 app = FastAPI(title="LocalStream Server", version="1.0.0")
@@ -200,32 +223,39 @@ async def health():
 if __name__ == "__main__":
     import sys
     
-    cert_file = Path("/etc/letsencrypt/live/downloader.groupxyz.me/fullchain.pem")
-    key_file = Path("/etc/letsencrypt/live/downloader.groupxyz.me/privkey.pem")
+    server_config = CONFIG["server"]
+    ssl_config = server_config["ssl"]
     
-    use_ssl = cert_file.exists() and key_file.exists()
+    cert_file = Path(ssl_config["cert_file"]) if ssl_config["enabled"] else None
+    key_file = Path(ssl_config["key_file"]) if ssl_config["enabled"] else None
+    
+    use_ssl = ssl_config["enabled"] and cert_file and cert_file.exists() and key_file and key_file.exists()
+    
+    host = server_config["host"]
+    port = server_config["port"]
     
     if use_ssl:
-        print(f"Starting HTTPS server on https://0.0.0.0:8192")
+        print(f"Starting HTTPS server on https://{host}:{port}")
         print(f"Using certificates: {cert_file} and {key_file}")
         uvicorn.run(
             app,
-            host="0.0.0.0",
-            port=8192,
+            host=host,
+            port=port,
             ssl_keyfile=str(key_file),
             ssl_certfile=str(cert_file),
             reload=False
         )
     else:
-        print("WARNING: SSL certificates not found!")
-        print("Starting HTTP server on http://0.0.0.0:8192")
-        print("\nTo enable HTTPS, place your Let's Encrypt certificates:")
-        print(f"  - {cert_file}")
-        print(f"  - {key_file}")
+        if ssl_config["enabled"]:
+            print("WARNING: SSL is enabled but certificates not found!")
+            if cert_file:
+                print(f"  Certificate: {cert_file}")
+            if key_file:
+                print(f"  Key: {key_file}")
+        print(f"Starting HTTP server on http://{host}:{port}")
         uvicorn.run(
             app,
-            host="0.0.0.0",
-            port=8192,
+            host=host,
+            port=port,
             reload=False
         )
-
