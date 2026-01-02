@@ -34,7 +34,7 @@ class SettingsActivity : AppCompatActivity() {
     
     private fun loadSettings() {
         val prefs = getSharedPreferences("app_settings", MODE_PRIVATE)
-        serverUrlEdit.setText(prefs.getString("server_url", "https://downloader.groupxyz.me:8192"))
+        serverUrlEdit.setText(prefs.getString("server_url", ""))
         usernameEdit.setText(prefs.getString("username", ""))
         passwordEdit.setText(prefs.getString("password", ""))
     }
@@ -76,3 +76,4 @@ class SettingsActivity : AppCompatActivity() {
         return true
     }
 }
+
