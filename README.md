@@ -15,7 +15,7 @@ PyQt6-based music player with Spotify integration and local library management.
 - Playlist management with persistent storage
 - Spotify song/album/playlist download via spotdl
 - Server synchronization for cross-device library access
-- Strict deduplication (filename or filename+size based)
+- Audio library with all songs
 
 **Requirements:** Python 3.8+, PyQt6, mutagen, pyloudnorm
 
