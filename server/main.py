@@ -28,8 +28,8 @@ MUSIC_DIR.mkdir(exist_ok=True)
 
 USERS_DB = {
     "GroupXyz": {
-        "username": "GroupXyz",
-        "password_hash": hashlib.sha256("w92hS82kaWdall".encode()).hexdigest()
+        "username": "Admin",
+        "password_hash": hashlib.sha256("Password".encode()).hexdigest()
     }
 }
 
@@ -228,3 +228,4 @@ if __name__ == "__main__":
             port=8192,
             reload=False
         )
+
