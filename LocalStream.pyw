@@ -1,3 +1,4 @@
+from server_sync import ServerSync
 """
 LocalStream - Native Music Player
 A high-quality music player with Spotify-like features
@@ -21,8 +22,13 @@ from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal, QUrl, QByteArray, QPoint
 from PyQt6.QtGui import QIcon, QFont, QPalette, QColor, QPixmap, QPainter, QAction, QDrag
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 import mutagen
 from mutagen.mp3 import MP3
+from mutagen.mp4 import MP4
+import pyloudnorm as pyln
+import soundfile as sf
+import numpy as np
 from mutagen.id3 import ID3, APIC
 
 
@@ -200,7 +206,9 @@ class DownloadWorker(QObject):
             self.output.emit(f"Spotify URL: {self.url}\n")
             self.output.emit("-" * 60 + "\n\n")
             
-            existing_files = set(Path(self.download_dir).glob("*.mp3"))
+            existing_files = set()
+            existing_files.update(Path(self.download_dir).glob("*.mp3"))
+            existing_files.update(Path(self.download_dir).glob("*.mp4"))
             
             cmd = [
                 sys.executable,
@@ -262,32 +270,58 @@ class DownloadWorker(QObject):
                 self.output.emit("Loading song metadata...\n\n")
                 
                 songs = []
-                all_mp3_files = set(Path(self.download_dir).glob("*.mp3"))
-                mp3_files = list(all_mp3_files - existing_files)
-                mp3_files = list(all_mp3_files - existing_files)
+                all_media_files = set()
+                all_media_files.update(Path(self.download_dir).glob("*.mp3"))
+                all_media_files.update(Path(self.download_dir).glob("*.mp4"))
+                media_files = list(all_media_files - existing_files)
                 
-                for i, file in enumerate(mp3_files):
+                for i, file in enumerate(media_files):
                     try:
                         self.output.emit(f"Loading: {file.name}\n")
-                        audio = MP3(file)
+                        
+                        audio = None
+                        if file.suffix.lower() == '.mp3':
+                            try:
+                                audio = MP3(file)
+                            except Exception as e:
+                                self.output.emit(f"Skipping {file.name}: Not a valid MP3 file - {e}\n")
+                                continue
+                        elif file.suffix.lower() == '.mp4':
+                            try:
+                                audio = MP4(file)
+                            except Exception as e:
+                                self.output.emit(f"Skipping {file.name}: Not a valid MP4 file - {e}\n")
+                                continue
+                        else:
+                            continue
+                        
+                        if not audio:
+                            continue
+                            
                         duration = int(audio.info.length)
                         
                         title = file.stem
                         artist = "Unknown Artist"
                         album = "Unknown Album"
                         
-                        if audio.tags:
+                        if file.suffix.lower() == '.mp3' and audio.tags:
                             title = str(audio.tags.get("TIT2", title))
                             artist = str(audio.tags.get("TPE1", artist))
                             album = str(audio.tags.get("TALB", album))
+                        elif file.suffix.lower() == '.mp4' and audio.tags:
+                            title = str(audio.tags.get("\xa9nam", [title])[0])
+                            artist = str(audio.tags.get("\xa9ART", ["Unknown Artist"])[0])
+                            album = str(audio.tags.get("\xa9alb", ["Unknown Album"])[0])
                         
                         album_art_data = None
                         try:
-                            if audio.tags:
+                            if file.suffix.lower() == '.mp3' and audio.tags:
                                 for tag in audio.tags.values():
                                     if hasattr(tag, 'mime') and tag.mime.startswith('image/'):
                                         album_art_data = tag.data
                                         break
+                            elif file.suffix.lower() == '.mp4' and audio.tags and 'covr' in audio.tags:
+                                album_art_data = bytes(audio.tags['covr'][0])
                         except:
                             pass
                         
@@ -329,6 +363,15 @@ class MusicPlayer(QMainWindow):
         self.player.setAudioOutput(self.audio_output)
         self.audio_output.setVolume(0.7)
         
+        self.loudness_meter = pyln.Meter(44100)
+        self.target_loudness = -14.0
+        self.track_loudness_values = {}
+        
+        self.video_widget = QVideoWidget()
+        self.video_widget.setVisible(False)
+        self.player.setVideoOutput(self.video_widget)
+        self.current_file_is_video = False
+        
         self.music_folder = Path(__file__).parent / "Music"
         self.music_folder.mkdir(exist_ok=True)
         self.current_playlist = []
@@ -357,12 +400,13 @@ class MusicPlayer(QMainWindow):
         self.translation_enabled = False
         self.translator = None
         
-        self.server_url = ""
-        self.server_username = ""
-        self.server_password = ""
+        self.server_url = None
+        self.server_username = None
+        self.server_password = None
         self.auto_sync_enabled = False
         self.auto_sync_interval = 300000
         self.last_playlists_hash = None
+        self.strict_deduplication = True
         
         self.setup_ui()
         self.apply_dark_theme()
@@ -371,8 +415,29 @@ class MusicPlayer(QMainWindow):
         
         self.load_music_library()
         self.load_playlists()
-        self.refresh_playlist_sidebar()
         
+        unique_songs = {}
+        for song in self.all_songs:
+            try:
+                file_path = Path(song["path"])
+                if file_path.exists():
+                    file_stat = file_path.stat()
+                    if self.strict_deduplication:
+                        file_signature = file_path.name
+                    else:
+                        file_signature = (file_path.name, file_stat.st_size)
+                    
+                    if file_signature not in unique_songs:
+                        unique_songs[file_signature] = song
+                else:
+                    unique_songs[song["path"]] = song
+            except Exception:
+                unique_songs[song["path"]] = song
+        
+        self.all_songs = list(unique_songs.values())
+        self.all_songs.sort(key=lambda x: x["title"])
+        self.refresh_playlist_sidebar()
+
         self.current_playlist_name = None
         self.view_label.setText("Your Library")
         self.display_songs(self.all_songs)
@@ -524,6 +589,9 @@ class MusicPlayer(QMainWindow):
             """)
             btn.setIconSize(QSize(20, 20))
             btn.clicked.connect(lambda checked, k=key: self.switch_view(k))
+            if key == "library":
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(self.show_library_context_menu)
             layout.addWidget(btn)
             self.nav_buttons[key] = btn
         
@@ -685,7 +753,18 @@ class MusicPlayer(QMainWindow):
         
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
         content_splitter.setStyleSheet("QSplitter::handle { background-color: #282828; }")
-        content_splitter.addWidget(self.song_list)
+
+        list_container = QWidget()
+        list_layout = QVBoxLayout(list_container)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(0)
+ 
+        self.video_widget.setStyleSheet("background-color: #000000;")
+        list_layout.addWidget(self.video_widget)
+        
+        list_layout.addWidget(self.song_list)
+        
+        content_splitter.addWidget(list_container)
         
         self.lyrics_panel = QTextEdit()
         self.lyrics_panel.setReadOnly(True)
@@ -948,34 +1027,74 @@ class MusicPlayer(QMainWindow):
     def load_music_library(self):
         """Scan and load all music files from all playlist folders"""
         self.all_songs = []
+        seen_files = set()
         
         base_dir = Path(__file__).parent
         
         for folder in base_dir.iterdir():
             if not folder.is_dir() or folder.name.startswith('.') or folder.name == '__pycache__':
                 continue
+
+            media_files = []
+            media_files.extend(folder.glob("*.mp3"))
+            media_files.extend(folder.glob("*.mp4"))
             
-            for file in folder.glob("*.mp3"):
+            for file in media_files:
                 try:
-                    audio = MP3(file)
+                    file_stat = file.stat()
+                    if self.strict_deduplication:
+                        file_signature = file.name
+                    else:
+                        file_signature = (file.name, file_stat.st_size)
+                    
+                    if file_signature in seen_files:
+                        continue
+                    
+                    seen_files.add(file_signature)
+                    
+                    audio = None
+                    if file.suffix.lower() == '.mp3':
+                        try:
+                            audio = MP3(file)
+                        except Exception as e:
+                            print(f"Skipping {file.name}: Not a valid MP3 file - {e}")
+                            continue
+                    elif file.suffix.lower() == '.mp4':
+                        try:
+                            audio = MP4(file)
+                        except Exception as e:
+                            print(f"Skipping {file.name}: Not a valid MP4 file - {e}")
+                            continue
+                    else:
+                        continue
+                    
+                    if not audio:
+                        continue
+                        
                     duration = int(audio.info.length)
                     
                     title = file.stem
                     artist = "Unknown Artist"
                     album = "Unknown Album"
                     
-                    if audio.tags:
+                    if file.suffix.lower() == '.mp3' and audio.tags:
                         title = str(audio.tags.get("TIT2", title))
                         artist = str(audio.tags.get("TPE1", artist))
                         album = str(audio.tags.get("TALB", album))
+                    elif file.suffix.lower() == '.mp4' and audio.tags:
+                        title = str(audio.tags.get("\xa9nam", [title])[0])
+                        artist = str(audio.tags.get("\xa9ART", ["Unknown Artist"])[0])
+                        album = str(audio.tags.get("\xa9alb", ["Unknown Album"])[0])
                     
                     album_art_data = None
                     try:
-                        if audio.tags:
+                        if file.suffix.lower() == '.mp3' and audio.tags:
                             for tag in audio.tags.values():
                                 if hasattr(tag, 'mime') and tag.mime.startswith('image/'):
                                     album_art_data = tag.data
                                     break
+                        elif file.suffix.lower() == '.mp4' and audio.tags and 'covr' in audio.tags:
+                            album_art_data = bytes(audio.tags['covr'][0])
                     except:
                         pass
                     
@@ -1002,39 +1121,108 @@ class MusicPlayer(QMainWindow):
         try:
             with open(self.playlists_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
+
             songs_by_path = {song["path"]: song for song in self.all_songs}
             
+            global_existing_signatures = set()
+            for song in self.all_songs:
+                try:
+                    file_path = Path(song["path"])
+                    if file_path.exists():
+                        file_stat = file_path.stat()
+                        if self.strict_deduplication:
+                            global_existing_signatures.add(file_path.name)
+                        else:
+                            global_existing_signatures.add((file_path.name, file_stat.st_size))
+                except Exception:
+                    pass
+
             for name, playlist_data in data.items():
                 song_paths = playlist_data.get("song_paths", [])
                 songs = []
-                
+
                 for path in song_paths:
                     if path in songs_by_path:
                         songs.append(songs_by_path[path])
                     elif Path(path).exists():
                         try:
-                            audio = MP3(path)
-                            duration = int(audio.info.length)
+                            path_obj = Path(path)
+                            try:
+                                file_stat = path_obj.stat()
+                                if self.strict_deduplication:
+                                    file_signature = path_obj.name
+                                else:
+                                    file_signature = (path_obj.name, file_stat.st_size)
+                                    
+                                if file_signature in global_existing_signatures:
+                                    for existing_song in self.all_songs:
+                                        try:
+                                            existing_path = Path(existing_song["path"])
+                                            if existing_path.exists():
+                                                existing_stat = existing_path.stat()
+                                                if self.strict_deduplication:
+                                                    match = existing_path.name == path_obj.name
+                                                else:
+                                                    match = (existing_path.name, existing_stat.st_size) == file_signature
+                                                    
+                                                if match:
+                                                    songs.append(existing_song)
+                                                    break
+                                        except Exception:
+                                            continue
+                                    continue
+                            except Exception:
+                                pass
                             
-                            title = Path(path).stem
+                            path_obj = Path(path)
+                            audio = None
+                            if path_obj.suffix.lower() == '.mp3':
+                                try:
+                                    audio = MP3(path)
+                                except Exception as e:
+                                    print(f"Skipping {path}: Not a valid MP3 file - {e}")
+                                    continue
+                            elif path_obj.suffix.lower() == '.mp4':
+                                try:
+                                    audio = MP4(path)
+                                except Exception as e:
+                                    print(f"Skipping {path}: Not a valid MP4 file - {e}")
+                                    continue
+                            else:
+                                continue
+                            
+                            if not audio:
+                                continue
+                                
+                            duration = int(audio.info.length)
+
+                            title = path_obj.stem
                             artist = "Unknown Artist"
                             album = "Unknown Album"
                             album_art = None
-                            
-                            if hasattr(audio, 'tags') and audio.tags:
+
+                            if path_obj.suffix.lower() == '.mp3' and hasattr(audio, 'tags') and audio.tags:
                                 if 'TIT2' in audio.tags:
                                     title = str(audio.tags['TIT2'])
                                 if 'TPE1' in audio.tags:
                                     artist = str(audio.tags['TPE1'])
                                 if 'TALB' in audio.tags:
                                     album = str(audio.tags['TALB'])
-                                
+
                                 for tag in audio.tags.values():
                                     if isinstance(tag, APIC):
                                         album_art = tag.data
                                         break
-                            
+                            elif path_obj.suffix.lower() == '.mp4' and hasattr(audio, 'tags') and audio.tags:
+                                if '\xa9nam' in audio.tags:
+                                    title = str(audio.tags['\xa9nam'][0])
+                                if '\xa9ART' in audio.tags:
+                                    artist = str(audio.tags['\xa9ART'][0])
+                                if '\xa9alb' in audio.tags:
+                                    album = str(audio.tags['\xa9alb'][0])
+                                if 'covr' in audio.tags:
+                                    album_art = bytes(audio.tags['covr'][0])
+
                             song = {
                                 "path": path,
                                 "title": title,
@@ -1044,22 +1232,29 @@ class MusicPlayer(QMainWindow):
                                 "album_art": album_art
                             }
                             songs.append(song)
+                            
+                            try:
+                                file_stat = path_obj.stat()
+                                if self.strict_deduplication:
+                                    file_signature = path_obj.name
+                                else:
+                                    file_signature = (path_obj.name, file_stat.st_size)
+                                    
+                                if file_signature not in global_existing_signatures:
+                                    self.all_songs.append(song)
+                                    global_existing_signatures.add(file_signature)
+                            except Exception:
+                                self.all_songs.append(song)
                         except Exception as e:
                             print(f"Error loading song {path}: {e}")
-                
+
                 if songs:
                     self.playlists[name] = {
                         "songs": songs,
                         "created": playlist_data.get("created", "unknown"),
                         "persistent": playlist_data.get("persistent", False)
                     }
-                    
-                    existing_paths = {song["path"] for song in self.all_songs}
-                    for song in songs:
-                        if song["path"] not in existing_paths:
-                            self.all_songs.append(song)
-                            existing_paths.add(song["path"])
-            
+
             self.all_songs.sort(key=lambda x: x["title"])
         except Exception as e:
             print(f"Error loading playlists: {e}")
@@ -1133,29 +1328,55 @@ class MusicPlayer(QMainWindow):
                 return
         
         songs = []
-        mp3_files = list(folder_path.glob("*.mp3"))
+        media_files = []
+        media_files.extend(folder_path.glob("*.mp3"))
+        media_files.extend(folder_path.glob("*.mp4"))
         
-        for file in mp3_files:
+        for file in media_files:
             try:
-                audio = MP3(file)
+                audio = None
+                if file.suffix.lower() == '.mp3':
+                    try:
+                        audio = MP3(file)
+                    except Exception as e:
+                        print(f"Skipping {file.name}: Not a valid MP3 file - {e}")
+                        continue
+                elif file.suffix.lower() == '.mp4':
+                    try:
+                        audio = MP4(file)
+                    except Exception as e:
+                        print(f"Skipping {file.name}: Not a valid MP4 file - {e}")
+                        continue
+                else:
+                    continue
+                
+                if not audio:
+                    continue
+                    
                 duration = int(audio.info.length)
                 
                 title = file.stem
                 artist = "Unknown Artist"
                 album = "Unknown Album"
                 
-                if audio.tags:
+                if file.suffix.lower() == '.mp3' and audio.tags:
                     title = str(audio.tags.get("TIT2", title))
                     artist = str(audio.tags.get("TPE1", artist))
                     album = str(audio.tags.get("TALB", album))
+                elif file.suffix.lower() == '.mp4' and audio.tags:
+                    title = str(audio.tags.get("\xa9nam", [title])[0])
+                    artist = str(audio.tags.get("\xa9ART", ["Unknown Artist"])[0])
+                    album = str(audio.tags.get("\xa9alb", ["Unknown Album"])[0])
                 
                 album_art_data = None
                 try:
-                    if audio.tags:
+                    if file.suffix.lower() == '.mp3' and audio.tags:
                         for tag in audio.tags.values():
                             if hasattr(tag, 'mime') and tag.mime.startswith('image/'):
                                 album_art_data = tag.data
                                 break
+                    elif file.suffix.lower() == '.mp4' and audio.tags and 'covr' in audio.tags:
+                        album_art_data = bytes(audio.tags['covr'][0])
                 except:
                     pass
                 
@@ -1567,6 +1788,34 @@ class MusicPlayer(QMainWindow):
                 self.view_label.setText("Your Library")
                 self.display_songs(self.all_songs)
     
+    def show_library_context_menu(self, position: QPoint):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #282828;
+                color: #ffffff;
+                border: 1px solid #3e3e3e;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+            }
+            QMenu::item:selected {
+                background-color: #3e3e3e;
+            }
+            QMenu::item:checked {
+                background-color: #1DB954;
+            }
+        """)
+        
+        dedup_action = QAction("✓ Strict Deduplication" if self.strict_deduplication else "Strict Deduplication", self)
+        dedup_action.setCheckable(True)
+        dedup_action.setChecked(self.strict_deduplication)
+        dedup_action.triggered.connect(self.toggle_strict_deduplication)
+        menu.addAction(dedup_action)
+        
+        menu.exec(self.nav_buttons["library"].mapToGlobal(position))
+    
     def rename_playlist(self, old_name):
         """Rename a playlist"""
         new_name, ok = QInputDialog.getText(self, "Rename Playlist", 
@@ -1711,7 +1960,7 @@ class MusicPlayer(QMainWindow):
             self,
             "Select MP3 Files to Import",
             str(self.music_folder),
-            "MP3 Files (*.mp3);;All Files (*.*)"
+            "Audio Files (*.mp3 *.mp4);;MP3 Files (*.mp3);;MP4 Files (*.mp4);;All Files (*.*)"
         )
         
         if not files:
@@ -1730,15 +1979,37 @@ class MusicPlayer(QMainWindow):
                     print(f"Skipped duplicate: {file_path}")
                     continue
                 
-                audio = MP3(file_path)
+                file_obj = Path(file_path)
+                audio = None
+                if file_obj.suffix.lower() == '.mp3':
+                    try:
+                        audio = MP3(file_path)
+                    except Exception as e:
+                        error_files.append(f"{file_obj.name}: Not a valid MP3 file - {e}")
+                        print(f"Skipping {file_obj.name}: Not a valid MP3 file - {e}")
+                        continue
+                elif file_obj.suffix.lower() == '.mp4':
+                    try:
+                        audio = MP4(file_path)
+                    except Exception as e:
+                        error_files.append(f"{file_obj.name}: Not a valid MP4 file - {e}")
+                        print(f"Skipping {file_obj.name}: Not a valid MP4 file - {e}")
+                        continue
+                else:
+                    error_files.append(f"{file_obj.name}: Unsupported file format")
+                    continue
+                
+                if not audio:
+                    continue
+                
                 duration = int(audio.info.length)
                 
-                title = Path(file_path).stem
+                title = file_obj.stem
                 artist = "Unknown Artist"
                 album = "Unknown Album"
                 album_art = None
                 
-                if hasattr(audio, 'tags') and audio.tags:
+                if file_obj.suffix.lower() == '.mp3' and hasattr(audio, 'tags') and audio.tags:
                     if 'TIT2' in audio.tags:
                         title = str(audio.tags['TIT2'])
                     if 'TPE1' in audio.tags:
@@ -1750,6 +2021,15 @@ class MusicPlayer(QMainWindow):
                         if isinstance(tag, APIC):
                             album_art = tag.data
                             break
+                elif file_obj.suffix.lower() == '.mp4' and hasattr(audio, 'tags') and audio.tags:
+                    if '\xa9nam' in audio.tags:
+                        title = str(audio.tags['\xa9nam'][0])
+                    if '\xa9ART' in audio.tags:
+                        artist = str(audio.tags['\xa9ART'][0])
+                    if '\xa9alb' in audio.tags:
+                        album = str(audio.tags['\xa9alb'][0])
+                    if 'covr' in audio.tags:
+                        album_art = bytes(audio.tags['covr'][0])
                 
                 song = {
                     "path": file_path,
@@ -1824,6 +2104,23 @@ class MusicPlayer(QMainWindow):
         self.current_playlist = songs
         self.song_list.clear()
         
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState or \
+           self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+            if self.current_file_is_video and self.current_index < len(self.current_playlist):
+                current_song = self.current_playlist[self.current_index]
+                if any(song["path"] == current_song["path"] for song in songs):
+                    self.video_widget.setVisible(True)
+                    self.song_list.setVisible(False)
+                else:
+                    self.video_widget.setVisible(False)
+                    self.song_list.setVisible(True)
+            else:
+                self.video_widget.setVisible(False)
+                self.song_list.setVisible(True)
+        else:
+            self.video_widget.setVisible(False)
+            self.song_list.setVisible(True)
+        
         for i, song in enumerate(songs):
             item = QListWidgetItem()
             
@@ -1884,8 +2181,21 @@ class MusicPlayer(QMainWindow):
         if 0 <= index < len(self.current_playlist):
             self.current_index = index
             song = self.current_playlist[index]
+
+            file_path = Path(song["path"])
+            self.current_file_is_video = file_path.suffix.lower() == '.mp4'
+              
+            if self.current_file_is_video:
+                self.video_widget.setVisible(True)
+                self.song_list.setVisible(False)
+            else:
+                self.video_widget.setVisible(False)
+                self.song_list.setVisible(True)
             
             self.player.setSource(QUrl.fromLocalFile(song["path"]))
+            
+            self.apply_loudness_normalization(song["path"])
+            
             self.player.play()
             self.is_playing = True
             self.play_btn.setIcon(self.icons['pause'])
@@ -1993,6 +2303,40 @@ class MusicPlayer(QMainWindow):
         """Cycle through repeat modes"""
         self.repeat_mode = (self.repeat_mode + 1) % 3
         self.update_repeat_button()
+    
+    def toggle_strict_deduplication(self):
+        self.strict_deduplication = not self.strict_deduplication
+        self.save_settings()
+        
+        self.load_music_library()
+        self.load_playlists()
+        
+        unique_songs = {}
+        for song in self.all_songs:
+            try:
+                file_path = Path(song["path"])
+                if file_path.exists():
+                    file_stat = file_path.stat()
+                    if self.strict_deduplication:
+                        file_signature = file_path.name
+                    else:
+                        file_signature = (file_path.name, file_stat.st_size)
+                    
+                    if file_signature not in unique_songs:
+                        unique_songs[file_signature] = song
+                else:
+                    unique_songs[song["path"]] = song
+            except Exception:
+                unique_songs[song["path"]] = song
+        
+        self.all_songs = list(unique_songs.values())
+        self.all_songs.sort(key=lambda x: x["title"])
+        
+        if self.current_playlist_name is None:
+            self.display_songs(self.all_songs)
+        else:
+            if self.current_playlist_name in self.playlists:
+                self.display_songs(self.playlists[self.current_playlist_name]["songs"])
     
     def toggle_lyrics(self):
         """Toggle lyrics panel visibility"""
@@ -2110,8 +2454,32 @@ class MusicPlayer(QMainWindow):
         self.audio_output.setVolume(volume)
         self.save_settings()
     
+    def apply_loudness_normalization(self, file_path):
+        try:
+            if file_path in self.track_loudness_values:
+                loudness = self.track_loudness_values[file_path]
+            else:
+                data, rate = sf.read(file_path)
+                if len(data.shape) > 1:
+                    data = np.mean(data, axis=1)
+                
+                loudness = self.loudness_meter.integrated_loudness(data)
+                self.track_loudness_values[file_path] = loudness
+            
+            loudness_delta = self.target_loudness - loudness
+            volume_multiplier = 10 ** (loudness_delta / 20)
+            
+            volume_multiplier = max(0.5, min(2.0, volume_multiplier))
+            
+            current_volume = self.volume_slider.value() / 100.0
+            normalized_volume = current_volume * volume_multiplier
+            normalized_volume = max(0.0, min(1.0, normalized_volume))
+            
+            self.audio_output.setVolume(normalized_volume)
+        except Exception:
+            pass
+    
     def load_lyrics(self, file_path):
-        """Load and display lyrics from MP3 file or LRC file"""
         try:
             self.synced_lyrics = []
             self.current_lyric_index = -1
@@ -2128,8 +2496,25 @@ class MusicPlayer(QMainWindow):
                     self.display_synced_lyrics()
                     return
             
-            audio = MP3(file_path)
-            if hasattr(audio, 'tags') and audio.tags:
+            file_ext = Path(file_path).suffix.lower()
+            
+            if file_ext == '.mp3':
+                try:
+                    audio = MP3(file_path)
+                except Exception:
+                    self.lyrics_panel.setText("")
+                    return
+            elif file_ext == '.mp4':
+                try:
+                    audio = MP4(file_path)
+                except Exception:
+                    self.lyrics_panel.setText("")
+                    return
+            else:
+                self.lyrics_panel.setText("")
+                return
+            
+            if file_ext == '.mp3' and hasattr(audio, 'tags') and audio.tags:
                 uslt_frames = audio.tags.getall('USLT')
                 if uslt_frames:
                     lyrics = uslt_frames[0].text
@@ -2140,8 +2525,16 @@ class MusicPlayer(QMainWindow):
                             self.translate_lyrics()
                             self.display_synced_lyrics()
                             return
-                
-                if not lyrics:
+            
+            elif file_ext == '.mp4' and hasattr(audio, 'tags') and audio.tags:
+                for key in ['\xa9lyr', 'lyr']:
+                    if key in audio.tags:
+                        lyrics = str(audio.tags[key][0])
+                        print(f"Found MP4 lyrics in tag: {key}")
+                        break
+            
+            if not lyrics and file_ext == '.mp3':
+                if hasattr(audio, 'tags') and audio.tags:
                     for key in audio.tags.keys():
                         if 'lyric' in key.lower():
                             try:
@@ -2601,7 +2994,6 @@ class MusicPlayer(QMainWindow):
             return
         
         try:
-            from server_sync import ServerSync
             sync = ServerSync(url, username, password)
             if sync.login():
                 QMessageBox.information(self, "Success", "Connection successful!")
@@ -2612,9 +3004,12 @@ class MusicPlayer(QMainWindow):
     
     def save_server_settings(self, url, username, password, auto_sync, interval_minutes, dialog):
         """Save server settings"""
-        self.server_url = url
-        self.server_username = username
-        self.server_password = password
+        if url or url == '':
+            self.server_url = url
+        if username or username == '':
+            self.server_username = username
+        if password or password == '':
+            self.server_password = password
         self.auto_sync_enabled = auto_sync
         self.auto_sync_interval = interval_minutes * 60000  
         self.save_settings()
@@ -2703,7 +3098,6 @@ class MusicPlayer(QMainWindow):
         QApplication.processEvents()
         
         try:
-            from server_sync import ServerSync
             
             console.append("Connecting to server...")
             QApplication.processEvents()
@@ -2872,20 +3266,39 @@ class MusicPlayer(QMainWindow):
                     self.repeat_mode = settings.get('repeat_mode', 0)
                     self.translation_language = settings.get('translation_language', 'en')
                     self.translation_enabled = settings.get('translation_enabled', False)
-                    self.server_url = settings.get('server_url', '')
-                    self.server_username = settings.get('server_username', '')
-                    self.server_password = settings.get('server_password', '')
+                    self.server_url = settings.get('server_url') if 'server_url' in settings else None
+                    self.server_username = settings.get('server_username') if 'server_username' in settings else None
+                    self.server_password = settings.get('server_password') if 'server_password' in settings else None
                     self.auto_sync_enabled = settings.get('auto_sync_enabled', False)
                     self.auto_sync_interval = settings.get('auto_sync_interval', 300000)
+                    self.strict_deduplication = settings.get('strict_deduplication', False)
                     print(f"[DEBUG] Loaded settings: server_url={self.server_url}, auto_sync={self.auto_sync_enabled}")
             except Exception as e:
                 print(f"[ERROR] Failed to load settings: {e}")
                 import traceback
                 traceback.print_exc()
+        if self.server_url is None:
+            self.server_url = ''
+            print(f"[DEBUG] server_url was None")
+        if self.server_username is None:
+            self.server_username = ''
+            print(f"[DEBUG] server_username was None")
+        if self.server_password is None:
+            self.server_password = ''
+            print(f"[DEBUG] server_password was None")
     
     def save_settings(self):
         """Save settings"""
         geom = self.geometry()
+        prev_settings = {}
+        if self.settings_file.exists():
+            try:
+                with open(self.settings_file, 'r') as f:
+                    prev_settings = json.load(f)
+            except Exception:
+                pass
+        def keep_nonempty(new, old):
+            return new if new not in [None, ''] else old if old not in [None, ''] else ''
         settings = {
             'volume': self.audio_output.volume(),
             'window_geometry': {
@@ -2898,11 +3311,12 @@ class MusicPlayer(QMainWindow):
             'repeat_mode': self.repeat_mode,
             'translation_language': self.translation_language,
             'translation_enabled': self.translation_enabled,
-            'server_url': getattr(self, 'server_url', ''),
-            'server_username': getattr(self, 'server_username', ''),
-            'server_password': getattr(self, 'server_password', ''),
+            'server_url': keep_nonempty(getattr(self, 'server_url', ''), prev_settings.get('server_url', '')),
+            'server_username': keep_nonempty(getattr(self, 'server_username', ''), prev_settings.get('server_username', '')),
+            'server_password': keep_nonempty(getattr(self, 'server_password', ''), prev_settings.get('server_password', '')),
             'auto_sync_enabled': getattr(self, 'auto_sync_enabled', False),
             'auto_sync_interval': getattr(self, 'auto_sync_interval', 300000),
+            'strict_deduplication': getattr(self, 'strict_deduplication', True),
         }
         with open(self.settings_file, 'w') as f:
             json.dump(settings, f, indent=2)
