@@ -1,0 +1,7 @@
+PyQt6>=6.6.0
+PyQt6-SVG>=6.6.0
+mutagen>=1.47.0
+spotdl>=4.2.0
+googletrans==4.0.0-rc1
+requests>=2.31.0
+pyloudnorm>=0.1.0
