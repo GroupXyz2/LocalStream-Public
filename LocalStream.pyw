@@ -1350,7 +1350,7 @@ class MusicPlayer(QMainWindow):
                 else:
                     continue
                 
-                if not audio:
+                if audio is None:
                     continue
                     
                 duration = int(audio.info.length)
@@ -1999,7 +1999,7 @@ class MusicPlayer(QMainWindow):
                     error_files.append(f"{file_obj.name}: Unsupported file format")
                     continue
                 
-                if not audio:
+                if audio is None:
                     continue
                 
                 duration = int(audio.info.length)
