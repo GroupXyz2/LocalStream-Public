@@ -78,7 +78,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)) 
     except jwt.JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
-# Routes
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(request: LoginRequest):
     user = USERS_DB.get(request.username)
@@ -159,7 +158,14 @@ async def get_music(filename: str, user: dict = Depends(verify_token)):
     file_path = MUSIC_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    
+    media_type = None
+    if filename.lower().endswith('.mp4'):
+        media_type = "video/mp4"
+    elif filename.lower().endswith('.mp3'):
+        media_type = "audio/mpeg"
+    
+    return FileResponse(file_path, media_type=media_type)
 
 @app.get("/music/{filename}/info")
 async def get_music_info(filename: str, user: dict = Depends(verify_token)):
