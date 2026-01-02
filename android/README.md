@@ -38,5 +38,6 @@ The server provides:
 ## Security
 
 - All API calls require JWT authentication
-- Credentials are stored in the app (hardcoded - for production, use secure storage)
+- Credentials are stored in the apps persitant storage
 - HTTPS required for production use
+
