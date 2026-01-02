@@ -295,7 +295,7 @@ class DownloadWorker(QObject):
                         else:
                             continue
                         
-                        if not audio:
+                        if audio is None:
                             continue
                             
                         duration = int(audio.info.length)
@@ -1068,7 +1068,7 @@ class MusicPlayer(QMainWindow):
                     else:
                         continue
                     
-                    if not audio:
+                    if audio is None:
                         continue
                         
                     duration = int(audio.info.length)
@@ -1191,7 +1191,7 @@ class MusicPlayer(QMainWindow):
                             else:
                                 continue
                             
-                            if not audio:
+                            if audio is None:
                                 continue
                                 
                             duration = int(audio.info.length)
@@ -2101,22 +2101,20 @@ class MusicPlayer(QMainWindow):
     
     def display_songs(self, songs):
         """Display songs in the list"""
+        current_song_path = None
+        if (self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState or \
+           self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState) and \
+           self.current_file_is_video:
+            current_source = self.player.source()
+            if not current_source.isEmpty():
+                current_song_path = current_source.toLocalFile()
+        
         self.current_playlist = songs
         self.song_list.clear()
         
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState or \
-           self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
-            if self.current_file_is_video and self.current_index < len(self.current_playlist):
-                current_song = self.current_playlist[self.current_index]
-                if any(song["path"] == current_song["path"] for song in songs):
-                    self.video_widget.setVisible(True)
-                    self.song_list.setVisible(False)
-                else:
-                    self.video_widget.setVisible(False)
-                    self.song_list.setVisible(True)
-            else:
-                self.video_widget.setVisible(False)
-                self.song_list.setVisible(True)
+        if current_song_path and any(song["path"] == current_song_path for song in songs):
+            self.video_widget.setVisible(True)
+            self.song_list.setVisible(False)
         else:
             self.video_widget.setVisible(False)
             self.song_list.setVisible(True)
